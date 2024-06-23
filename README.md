@@ -1,5 +1,8 @@
 # Pulsometer
 
+Details are yet to be described...
+work in progress
+
 Schematic
 
 ![image](https://github.com/Matii178/Pulsometer/assets/62108776/59c3f091-2fa5-4775-a320-713e405176e0)
