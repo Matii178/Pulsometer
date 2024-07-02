@@ -22,17 +22,22 @@
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 
+//included for swv printf
+#include <stdio.h>
+
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
 /* USER CODE BEGIN PTD */
-	volatile int pulse = 0;
-	uint8_t falling_edge = 0;
 
 /* USER CODE END PTD */
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
+
+//masks for circular buffers
+#define MEAN_PULSE_MASK 7 //0b111
+#define CIRC_BUFFER_MASK 127 //0b1111111
 
 /* USER CODE END PD */
 
@@ -50,14 +55,13 @@ TIM_HandleTypeDef htim4;
 UART_HandleTypeDef huart2;
 
 /* USER CODE BEGIN PV */
-uint8_t button_pressed = 0;
-uint16_t circ_buffer[128] = {0};
+volatile uint16_t pulseDB; // variable with debugging purpouse
 volatile uint16_t counter = 0;
 volatile uint8_t measurement_flag = 0;
-uint8_t falling_edge_ct = 0;
-uint8_t heart_rate = 0;
-uint16_t tim_val_1 = 0, tim_val_2 = 0;
-uint8_t pulsem = 0;
+volatile uint8_t button_pressed = 0;
+
+uint16_t circ_buffer[128] = {0};
+uint16_t mean_pulse[8] = {0};
 
 /* USER CODE END PV */
 
@@ -74,7 +78,10 @@ static void MX_TIM4_Init(void);
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
-
+int __io_putchar(int chr) {
+	ITM_SendChar(chr);
+	return 1;
+}
 /* USER CODE END 0 */
 
 /**
@@ -84,6 +91,16 @@ static void MX_TIM4_Init(void);
 int main(void)
 {
   /* USER CODE BEGIN 1 */
+
+	uint16_t tim_val_1 = 0;
+	uint16_t result = 0;
+	uint8_t pulse = 0;
+	uint8_t falling_edge_counter = 0;
+	uint8_t mean_pulse_counter = 0;
+	uint8_t start_result_counter = 0;
+	uint8_t previous_edge = 0;
+	uint8_t falling_edge = 0;
+
 
   /* USER CODE END 1 */
 
@@ -116,17 +133,17 @@ int main(void)
 
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
-  falling_edge = 0;
 
   while (1)
   {
+	  //If user has pressed the button, start the measurement.
+	  //If user had already pressed the button before, stop the measurement.
 	  if(button_pressed) {
 
 		  if(HAL_TIM_Base_GetState(&htim3) == HAL_TIM_STATE_READY) {
 
 			  HAL_TIM_Base_Start(&htim3);
 			  HAL_ADC_Start_IT(&hadc1);
-
 
 		  } else if(HAL_TIM_Base_GetState(&htim3) == HAL_TIM_STATE_BUSY) {
 
@@ -137,37 +154,76 @@ int main(void)
 		  button_pressed = 0;
 	  }
 
+	  //If there is a new sample in the buffer, check for falling edge possibilities
 	  if(measurement_flag) {
 
-		  falling_edge_ct = 0;
+		  falling_edge_counter = 0;
 
+		  //check last 10 samples, if at least 7 of them are higher than the new one, a falling edge has occured.
 		  for(int i = 1; i < 11; i++) {
-			  if(circ_buffer[(counter - i) & 127] - 50 > circ_buffer[counter]) { //need to check ENOB
-				  falling_edge_ct++;
+			  if(circ_buffer[(counter - i) & 127] - 50 > circ_buffer[counter]) { //need to check ENOB for typical value of noise. Right now, empirically set to 50 to ignore the noise.
+				  falling_edge_counter++;
 			  }
 		  }
 
-		  if (falling_edge_ct > 6) {
-			  if(HAL_TIM_Base_GetState(&htim4) == HAL_TIM_STATE_READY) {
-				  HAL_TIM_Base_Start(&htim4);
-				  tim_val_1 = TIM4->CNT;
+		  if (falling_edge_counter > 6) {
 
-			  } else if(HAL_TIM_Base_GetState(&htim4) == HAL_TIM_STATE_BUSY) {
-				  tim_val_2 = TIM4->CNT;
+			  falling_edge = 1;
 
-				  //calculation of pulse out of ms value.
-				  pulsem = 60000.0/(tim_val_2);
-
-				  TIM4->CNT = 0;
-
-				  falling_edge = 1;
-
-			  }
 		  } else {
+
 			  falling_edge = 0;
+			  previous_edge = 0;
+
 		  }
+
 		  measurement_flag = 0;
 	  }
+
+	  //if falling edge has just occured.
+	  if(falling_edge == 1 && previous_edge == 0) {
+
+		  previous_edge = 1;
+
+		  //Start the timer to count time from first falling edge to the other.
+		  //If the timer4 is already running, check the time between two falling edges.
+		  if(HAL_TIM_Base_GetState(&htim4) == HAL_TIM_STATE_READY) {
+
+			  HAL_TIM_Base_Start(&htim4);
+
+		  } else if(HAL_TIM_Base_GetState(&htim4) == HAL_TIM_STATE_BUSY) {
+
+			  //waiting for mean_pulse circular buffer to fill with some values.
+			  if(start_result_counter < 8){
+				  start_result_counter++;
+			  }
+
+			  //checking CNT register of TIM4 to measure the time needed to calculate heart bpm
+			  tim_val_1 = TIM4->CNT;
+			  pulse = 60000.0/(tim_val_1);
+
+			  //filling mean_pulse circular buffer with calculated heart bpm value.
+			  mean_pulse[mean_pulse_counter++] = pulse;
+			  mean_pulse_counter &= MEAN_PULSE_MASK;
+
+			  //if the buffer has already filled with values, calculate mean of the values from it to gain the final result of heart bpm.
+			  if(start_result_counter == 8) {
+
+				  for(int i = 0; i < 8; i++) {
+					  result += mean_pulse[i];
+				  }
+
+				  result /= 8;
+				  printf("bpm: %d \n", result);
+				  result = 0;
+
+			  }
+
+			  //start from the beginning by clearing TIM4 CNT register.
+			  TIM4->CNT = 0;
+		  }
+	  }
+
 
     /* USER CODE END WHILE */
 
@@ -436,30 +492,21 @@ static void MX_GPIO_Init(void)
 void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin) {
 
 	//would be fine to debounce
-
 	button_pressed = 1;
 
 }
 
 void	HAL_ADC_ConvCpltCallback(ADC_HandleTypeDef* hadc){
 
-	counter++;
-	counter &= 127;
+	circ_buffer[counter++] = HAL_ADC_GetValue(hadc);
+	counter &= CIRC_BUFFER_MASK;
 
-	circ_buffer[counter] = HAL_ADC_GetValue(hadc);
-	pulse = circ_buffer[counter]; //debugging purpouse
+	pulseDB = circ_buffer[counter]; //used to depict current pulse signal in debugger
+
 	measurement_flag = 1;
 
-
-
-
 }
-void	HAL_ADC_ConvHalfCpltCallback(ADC_HandleTypeDef* hadc){
 
-	pulse = 5;
-
-
-}
 /* USER CODE END 4 */
 
 /**
