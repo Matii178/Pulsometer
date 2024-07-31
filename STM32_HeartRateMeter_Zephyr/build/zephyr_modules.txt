@@ -1,0 +1,4 @@
+"example-application":"/home/mateusz/my-workspace/example-application":"/home/mateusz/my-workspace/example-application"
+"cmsis":"/home/mateusz/my-workspace/modules/hal/cmsis":"${ZEPHYR_CMSIS_CMAKE_DIR}"
+"hal_nordic":"/home/mateusz/my-workspace/modules/hal/nordic":"${ZEPHYR_HAL_NORDIC_CMAKE_DIR}"
+"stm32":"/home/mateusz/my-workspace/modules/hal/stm32":"/home/mateusz/my-workspace/modules/hal/stm32"

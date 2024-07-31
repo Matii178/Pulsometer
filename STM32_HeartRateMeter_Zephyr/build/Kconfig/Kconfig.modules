@@ -1,0 +1,21 @@
+menu "example-application (/home/mateusz/my-workspace/example-application)"
+osource "/home/mateusz/my-workspace/example-application/Kconfig"
+config ZEPHYR_EXAMPLE_APPLICATION_MODULE
+	bool
+	default y
+endmenu
+menu "cmsis (/home/mateusz/my-workspace/modules/hal/cmsis)"
+osource "$(ZEPHYR_CMSIS_KCONFIG)"
+config ZEPHYR_CMSIS_MODULE
+	bool
+	default y
+endmenu
+menu "hal_nordic (/home/mateusz/my-workspace/modules/hal/nordic)"
+osource "$(ZEPHYR_HAL_NORDIC_KCONFIG)"
+config ZEPHYR_HAL_NORDIC_MODULE
+	bool
+	default y
+endmenu
+config ZEPHYR_STM32_MODULE
+   bool
+   default y
