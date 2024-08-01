@@ -3,6 +3,7 @@
 #include <zephyr/drivers/gpio.h>
 #include <zephyr/drivers/adc.h>
 #include <zephyr/devicetree.h>
+#include <zephyr/sys/ring_buffer.h>
 
 
 #define THREAD_COMMUNICATOR_STACK 512
@@ -14,12 +15,14 @@
 
 #define GPIOC_NODE DT_NODELABEL(gpioc)
 
+#define RING_BUF_BYTES 8
 
 void communicator_entry(void*, void*, void*);
 void calculate_entry(void *, void *, void *);
 void process_inputs_entry(void *, void *, void *);
 
 void adc_sampler_cb(struct k_timer *tim_id);
+void heart_beat_timer_cb(struct k_timer *tim_id);
 void button_press(const struct device *dev, struct gpio_callback *cb, gpio_port_pins_t pins);
 
 struct gpio_callback button_cb_data;
@@ -27,22 +30,19 @@ const struct device *gpioc_dev = DEVICE_DT_GET(GPIOC_NODE);
 static const struct adc_dt_spec adc_channel = ADC_DT_SPEC_GET(DT_PATH(zephyr_user));
 
 
-K_MSGQ_DEFINE(adc_data, 30,15,1);
+//RING_BUF_DECLARE(circ_buffer, RING_BUF_BYTES);
+
+K_MSGQ_DEFINE(adc_data, 2,15,1);
 
 K_TIMER_DEFINE(adc_sampler,adc_sampler_cb,NULL);
+K_TIMER_DEFINE(heart_beat_timer,heart_beat_timer_cb,NULL);
 
-// K_THREAD_STACK_DEFINE(communicator_area, THREAD_COMMUNICATOR_STACK);
-// struct k_thread communicator_data;
-// K_THREAD_STACK_DEFINE(calculate_area, THREAD_CALCULATE_STACK);
-// k_tid_t communicator;
-// K_THREAD_STACK_DEFINE(process_inputs_area, THREAD_PROCESS_INPUTS_STACK);
-// k_tid_t communicator;
 
 K_THREAD_DEFINE(communicator, THREAD_COMMUNICATOR_STACK,communicator_entry, NULL, NULL, NULL, THREAD_COMMUNICATOR_PRIORITY, 0, K_TICKS_FOREVER);
 K_THREAD_DEFINE(calculate, THREAD_CALCULATE_STACK, calculate_entry, NULL, NULL, NULL, THREAD_CALCULATE_PRIORITY, 0, K_TICKS_FOREVER);
 K_THREAD_DEFINE(process_input, THREAD_PROCESS_INPUTS_STACK, process_inputs_entry, NULL, NULL, NULL, THREAD_PROCESS_INPUTS_PRIORITY, 0, K_TICKS_FOREVER);
 
-int16_t buf = 0;
+uint16_t buf = 0;
 struct adc_sequence sequence = {
     .buffer = &buf,
     .buffer_size = sizeof(buf),
@@ -80,16 +80,14 @@ int main() {
         printk("adc_sequence_init error");
     }
 
-    // k_queue_init(&adc_data);
-
-    // k_tid_t communicator_id = k_thread_create(&communicator_data, communicator_area, K_THREAD_STACK_SIZEOF(communicator_area), communicator_entry,NULL, NULL, NULL, THREAD_COMMUNICATOR_PRIORITY,0, K_FOREVER);
-
 
     printk("init completed");
     
 
     return 0;
 }
+
+
 
 void communicator_entry(void* d1, void *d2, void *d3) {
 
@@ -100,24 +98,58 @@ void communicator_entry(void* d1, void *d2, void *d3) {
 
 }
 
+uint8_t heart_flag = 0;
+
 void calculate_entry(void* d1, void *d2, void *d3) {
     ARG_UNUSED(d1);
     ARG_UNUSED(d2);
     ARG_UNUSED(d3);
 
-
-    volatile int16_t adc_val;
+    uint16_t circ_buffer[128] = {0};
+    uint16_t adc_val;
+    uint8_t counter = 0;
+    uint8_t fallingEdge = 0;
+    uint8_t heartBeat = 0;
 
     for(;;) {
+
         if(k_msgq_num_used_get(&adc_data) > 0) {
 
             k_msgq_get(&adc_data,&adc_val,K_NO_WAIT);
-            printk("%d ",adc_val);
+            circ_buffer[counter++] = adc_val;
 
+
+            // for(int i = 0; i < 128; i++) {
+            //     printk("%d ",circ_buffer[i]);
+            // }
+            // printk("\n");
+
+            for(int i = 0; i < 50; i++) {
+
+                if( (adc_val + 10) < circ_buffer[(counter - i) & 127]) {
+                    fallingEdge++;
+                }
+
+            }
+
+            if(fallingEdge > 40 && heart_flag == 0) {
+                //a heart beat occured
+                printk("puk \n");
+
+                k_timer_start(&heart_beat_timer,K_MSEC(300),K_MSEC(300));
+                heart_flag = 1;
+            }
+            // printk("%d", heart_flag);
         }else {
             //printk("dupa");
-
+            
         }
+
+        fallingEdge = 0;
+
+        counter &= 127;
+
+        k_msleep(10);
     }
     
     //k_thread_suspend(calculate);
@@ -143,8 +175,8 @@ void process_inputs_entry(void* d1, void *d2, void *d3){
             printk("timer_starting!\n");
             pressedTimes= 1;
             k_thread_start(calculate);
-            printk("ashkdakhskdhas");
-            k_timer_start(&adc_sampler, K_MSEC(5), K_MSEC(20));
+            k_thread_resume(calculate);
+            k_timer_start(&adc_sampler, K_MSEC(0), K_MSEC(20));
 
 
         } else {
@@ -153,6 +185,7 @@ void process_inputs_entry(void* d1, void *d2, void *d3){
             pressedTimes = 0;
 
             k_timer_stop(&adc_sampler);
+            k_thread_suspend(calculate);
 
         }
 
@@ -160,26 +193,26 @@ void process_inputs_entry(void* d1, void *d2, void *d3){
     }
         
 
-        
-    
-
-
-
 }
 
 //timer 
 void adc_sampler_cb(struct k_timer *tim_id){
     
     adc_read(adc_channel.dev, &sequence);
-    k_msgq_put(&adc_data,&buf,K_NO_WAIT);
-    printk(".");
+    k_msgq_put(&adc_data,(uint16_t*)&buf,K_NO_WAIT);
+    // ring_buf_put(&circ_buffer,(uint8_t*)&buf,2);
 
+}
+
+void heart_beat_timer_cb(struct k_timer *tim_id){
+
+    heart_flag = 0;
+    // printk("jestem");
 }
 
 //button interrupt
 void button_press(const struct device *dev, struct gpio_callback *cb, gpio_port_pins_t pins) {
 	
-    printk("dzialam");
     k_thread_start(process_input);
     
     k_thread_resume(process_input);
